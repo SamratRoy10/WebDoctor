@@ -1,111 +1,65 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
-import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const port = Number(process.env.PORT || 3000);
-const kopaiUrl = 'https://usekopai.com/api/v1/chat/completions';
-
+const port = process.env.PORT || 3000;
+const agentId = process.env.KOPAI_AGENT_ID || 'cmu889j3z00000agmyyjq1bxc';
+const sessions = new Map();
 app.use(express.json({ limit: '1mb' }));
+app.use(express.static(__dirname));
 
-function configError() {
-  if (!process.env.KOPAI_API_KEY) return 'KOPAI_API_KEY is not configured';
-  if (!process.env.KOPAI_AGENT_ID || process.env.KOPAI_AGENT_ID === 'webdoctor-agent-id') return 'KOPAI_AGENT_ID is not configured';
-  return null;
+function session(req, res, next) {
+  const id = req.headers['x-webdoctor-session'] || req.cookies?.webdoctor_session;
+  const current = id && sessions.get(id);
+  if (!current) return res.status(401).json({ error: 'login_required' });
+  req.user = current;
+  next();
+}
+function endUserId(user) { return `webdoctor:${user.id}`; }
+function kopaiHeaders(extra = {}) {
+  return { Authorization: `Bearer ${process.env.KOPAI_API_KEY || ''}`, 'Content-Type': 'application/json', ...extra };
 }
 
-async function readSse(response) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let text = '';
-  const kopai = [];
+app.post('/api/auth/demo-login', (req, res) => {
+  const name = String(req.body?.name || 'Security Explorer').trim().slice(0, 40);
+  const id = crypto.randomUUID();
+  const user = { id, name, avatar: name.split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase(), createdAt: new Date().toISOString() };
+  sessions.set(id, user);
+  res.json({ sessionId: id, user });
+});
+app.get('/api/auth/me', session, (req, res) => res.json({ user: req.user, endUserId: endUserId(req.user) }));
+app.post('/api/auth/logout', session, (req, res) => { sessions.delete(req.headers['x-webdoctor-session']); res.json({ ok: true }); });
 
-  const consume = (frame) => {
-    const data = frame.split('\\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('');
-    if (!data || data === '[DONE]') return;
-    try {
-      const chunk = JSON.parse(data);
-      const delta = chunk.choices?.[0]?.delta;
-      if (delta?.content) text += delta.content;
-      if (delta?.kopai) kopai.push(delta.kopai);
-      if (chunk.error) throw new Error(chunk.error.message || 'Kopai stream failed');
-    } catch (error) {
-      if (error instanceof SyntaxError) return;
-      throw error;
-    }
-  };
-
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const frames = buffer.split('\\n\\n');
-    buffer = frames.pop() || '';
-    for (const frame of frames) consume(frame);
-    if (done) break;
-  }
-  if (buffer.trim()) consume(buffer);
-  return { text, kopai };
-}
-
-app.post('/api/scan', async (req, res) => {
-  const missing = configError();
-  if (missing) return res.status(503).json({ error: `${missing}. Copy .env.example to .env and fill it in.` });
-
-  const endUserId = process.env.WEBDOCTOR_END_USER_ID || 'webdoctor-demo-user';
-  const idempotencyKey = crypto.randomUUID();
-  const prompt = `Run an authorized full-stack security assessment for this scope: ${req.body?.scope || 'authorized application'}. Analyze application/API and system/infrastructure risk, correlate attack paths, and return concise evidence, confidence, vulnerabilities, components, remediation actions, and a security score. Do not claim exploitation beyond available evidence.`;
-
+app.post('/api/integrations', session, async (req, res) => {
+  const toolkit = req.body?.toolkit || 'github';
+  const redirectUri = req.body?.redirectUri || `${req.protocol}://${req.get('host')}/?connected=github`;
   try {
-    const upstream = await fetch(kopaiUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.KOPAI_API_KEY}`,
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream, application/json',
-        'Idempotency-Key': idempotencyKey
-      },
-      body: JSON.stringify({
-        model: process.env.KOPAI_AGENT_ID,
-        user: endUserId,
-        messages: [{ role: 'user', content: prompt }],
-        stream: true,
-        stream_options: { include_usage: true }
-      })
-    });
-
-    if (!upstream.ok) {
-      const detail = await upstream.text();
-      return res.status(upstream.status).json({ error: `Kopai returned ${upstream.status}`, detail: detail.slice(0, 500) });
-    }
-
-    const result = await readSse(upstream);
-    return res.json({ ok: true, ...result });
-  } catch (error) {
-    return res.status(502).json({ error: error.message || 'Unable to reach Kopai' });
-  }
+    const r = await fetch(`https://usekopai.com/api/v1/agents/${agentId}/integrations`, { method: 'POST', headers: kopaiHeaders(), body: JSON.stringify({ toolkit, endUserId: endUserId(req.user), redirectUri }) });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch (e) { res.status(502).json({ error: 'kopai_unreachable', message: e.message }); }
 });
-
-app.get('/', async (_req, res) => {
+app.get('/api/integrations', session, async (req, res) => {
   try {
-    const html = await fs.readFile(path.join(__dirname, 'index.html'), 'utf8');
-    res.type('html').send(html.replace('</body>', '<script src="/webdoctor-api.js"></script>\\n</body>'));
-  } catch {
-    res.status(500).send('Unable to load WebDoctor');
-  }
+    const r = await fetch(`https://usekopai.com/api/v1/agents/${agentId}/integrations?endUserId=${encodeURIComponent(endUserId(req.user))}`, { headers: kopaiHeaders() });
+    res.status(r.status).json(await r.json());
+  } catch (e) { res.status(502).json({ error: 'kopai_unreachable', message: e.message }); }
 });
 
-app.use(express.static(__dirname, { extensions: ['html'] }));
-
-app.get('*', (req, res) => {
-  if (req.path.startsWith('/api/')) return res.status(404).end();
-  res.sendFile(path.join(__dirname, 'index.html'), (error) => {
-    if (error) res.status(500).end();
-  });
+app.post('/api/chat', session, async (req, res) => {
+  const message = String(req.body?.message || '').trim();
+  if (!message) return res.status(400).json({ error: 'message_required' });
+  try {
+    const r = await fetch('https://usekopai.com/api/v1/chat/completions', { method: 'POST', headers: kopaiHeaders({ Accept: 'application/json' }), body: JSON.stringify({ model: agentId, user: endUserId(req.user), stream: false, messages: [{ role: 'user', content: message }] }) });
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json(data);
+    const text = data?.choices?.[0]?.message?.content || data?.content || JSON.stringify(data);
+    res.json({ text, raw: data });
+  } catch (e) { res.status(502).json({ error: 'kopai_unreachable', message: e.message }); }
 });
-
-app.listen(port, () => console.log(`WebDoctor running at http://localhost:${port}`));
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.listen(port, () => console.log(`WebDoctor listening on http://localhost:${port}`));
