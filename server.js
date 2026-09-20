@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -22,7 +23,7 @@ async function readSse(response) {
   const decoder = new TextDecoder();
   let buffer = '';
   let text = '';
-  let kopai = [];
+  const kopai = [];
 
   const consume = (frame) => {
     const data = frame.split('\\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('');
@@ -86,6 +87,15 @@ app.post('/api/scan', async (req, res) => {
     return res.json({ ok: true, ...result });
   } catch (error) {
     return res.status(502).json({ error: error.message || 'Unable to reach Kopai' });
+  }
+});
+
+app.get('/', async (_req, res) => {
+  try {
+    const html = await fs.readFile(path.join(__dirname, 'index.html'), 'utf8');
+    res.type('html').send(html.replace('</body>', '<script src="/webdoctor-api.js"></script>\\n</body>'));
+  } catch {
+    res.status(500).send('Unable to load WebDoctor');
   }
 });
 
