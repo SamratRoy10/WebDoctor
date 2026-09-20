@@ -13,13 +13,13 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(__dirname));
 
 function session(req, res, next) {
-  const id = req.headers['x-webdoctor-session'] || req.cookies?.webdoctor_session;
+  const id = req.headers['x-webdoctor-session'];
   const current = id && sessions.get(id);
   if (!current) return res.status(401).json({ error: 'login_required' });
   req.user = current;
   next();
 }
-function endUserId(user) { return `webdoctor:${user.id}`; }
+function endUserId(user) { return `webdoctor-${user.id}`; }
 function kopaiHeaders(extra = {}) {
   return { Authorization: `Bearer ${process.env.KOPAI_API_KEY || ''}`, 'Content-Type': 'application/json', ...extra };
 }
