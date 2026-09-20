@@ -1,15 +1,14 @@
 # WebDoctor
 
-WebDoctor is an AI full-stack security agent with a user-scoped chat experience.
+WebDoctor is a repository-first AI security investigation workspace. It uses Kopai to connect a user's GitHub account, list their repositories, and run a preloaded investigation when a repository is selected.
 
 ## Product flow
 
-1. Enter a demo workspace with a fake user identity.
-2. Connect GitHub through Kopai's `/api/integrations` flow.
-3. Ask WebDoctor to list or import repositories.
-4. Ask it to scan a selected repository and investigate attack paths.
-
-Each fake user receives a stable in-memory session and a stable Kopai `endUserId` (`webdoctor:<user-id>`). This keeps each user's connected GitHub account and agent memory separate during the demo.
+1. Enter a fake demo workspace. Each workspace receives a stable session and Kopai `endUserId`.
+2. Connect GitHub through `POST /api/integrations`.
+3. Load all accessible repositories through a preloaded Kopai agent message at `POST /api/repositories`.
+4. Select a repository. The UI automatically starts `POST /api/investigations` with a preloaded investigation instruction.
+5. Display the returned Kopai agent output as the assessment — no chat composer or conversational UI.
 
 ## Run locally
 
@@ -19,8 +18,12 @@ cp .env.example .env
 npm start
 ```
 
-Set `KOPAI_API_KEY` in `.env`. The agent ID is preconfigured as `cmu889j3z00000agmyyjq1bxc` but can be overridden with `KOPAI_AGENT_ID`.
+Set `KOPAI_API_KEY` in `.env`. The exposed agent ID defaults to `cmu889j3z00000agmyyjq1bxc` and can be overridden with `KOPAI_AGENT_ID`.
 
-The GitHub OAuth redirect domain must be registered in Kopai under Settings → Integrations → API redirect domains. For local development, register `http://localhost:3000`.
+Register the local redirect origin in Kopai: `http://localhost:3000`.
 
-This demo uses in-memory sessions, so user accounts reset when the server restarts. Replace the session store with a real auth/database layer before production.
+The demo user/session store is intentionally in memory for the prototype. Replace it with real authentication and a persistent store before production.
+
+## API notes
+
+The server uses Kopai's native `POST /api/v1/agents/{id}/messages` endpoint and sends the same sanitized `endUserId` for integrations, repository loading, and investigations. The API key is server-side only.

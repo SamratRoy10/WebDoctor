@@ -4,62 +4,22 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
-const port = process.env.PORT || 3000;
-const agentId = process.env.KOPAI_AGENT_ID || 'cmu889j3z00000agmyyjq1bxc';
-const sessions = new Map();
-app.use(express.json({ limit: '1mb' }));
-app.use(express.static(__dirname));
-
-function session(req, res, next) {
-  const id = req.headers['x-webdoctor-session'];
-  const current = id && sessions.get(id);
-  if (!current) return res.status(401).json({ error: 'login_required' });
-  req.user = current;
-  next();
-}
-function endUserId(user) { return `webdoctor-${user.id}`; }
-function kopaiHeaders(extra = {}) {
-  return { Authorization: `Bearer ${process.env.KOPAI_API_KEY || ''}`, 'Content-Type': 'application/json', ...extra };
-}
-
-app.post('/api/auth/demo-login', (req, res) => {
-  const name = String(req.body?.name || 'Security Explorer').trim().slice(0, 40);
-  const id = crypto.randomUUID();
-  const user = { id, name, avatar: name.split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase(), createdAt: new Date().toISOString() };
-  sessions.set(id, user);
-  res.json({ sessionId: id, user });
-});
-app.get('/api/auth/me', session, (req, res) => res.json({ user: req.user, endUserId: endUserId(req.user) }));
-app.post('/api/auth/logout', session, (req, res) => { sessions.delete(req.headers['x-webdoctor-session']); res.json({ ok: true }); });
-
-app.post('/api/integrations', session, async (req, res) => {
-  const toolkit = req.body?.toolkit || 'github';
-  const redirectUri = req.body?.redirectUri || `${req.protocol}://${req.get('host')}/?connected=github`;
-  try {
-    const r = await fetch(`https://usekopai.com/api/v1/agents/${agentId}/integrations`, { method: 'POST', headers: kopaiHeaders(), body: JSON.stringify({ toolkit, endUserId: endUserId(req.user), redirectUri }) });
-    const data = await r.json();
-    res.status(r.status).json(data);
-  } catch (e) { res.status(502).json({ error: 'kopai_unreachable', message: e.message }); }
-});
-app.get('/api/integrations', session, async (req, res) => {
-  try {
-    const r = await fetch(`https://usekopai.com/api/v1/agents/${agentId}/integrations?endUserId=${encodeURIComponent(endUserId(req.user))}`, { headers: kopaiHeaders() });
-    res.status(r.status).json(await r.json());
-  } catch (e) { res.status(502).json({ error: 'kopai_unreachable', message: e.message }); }
-});
-
-app.post('/api/chat', session, async (req, res) => {
-  const message = String(req.body?.message || '').trim();
-  if (!message) return res.status(400).json({ error: 'message_required' });
-  try {
-    const r = await fetch('https://usekopai.com/api/v1/chat/completions', { method: 'POST', headers: kopaiHeaders({ Accept: 'application/json' }), body: JSON.stringify({ model: agentId, user: endUserId(req.user), stream: false, messages: [{ role: 'user', content: message }] }) });
-    const data = await r.json();
-    if (!r.ok) return res.status(r.status).json(data);
-    const text = data?.choices?.[0]?.message?.content || data?.content || JSON.stringify(data);
-    res.json({ text, raw: data });
-  } catch (e) { res.status(502).json({ error: 'kopai_unreachable', message: e.message }); }
-});
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.listen(port, () => console.log(`WebDoctor listening on http://localhost:${port}`));
+const __dirname=path.dirname(fileURLToPath(import.meta.url));
+const app=express(); const port=process.env.PORT||3000;
+const agentId=process.env.KOPAI_AGENT_ID||'cmu889j3z00000agmyyjq1bxc';
+const sessions=new Map();
+app.use(express.json({limit:'1mb'})); app.use(express.static(__dirname));
+function endUserId(u){return `webdoctor-${u.id}`.replace(/[^A-Za-z0-9_-]/g,'-').slice(0,128)}
+function auth(req,res,next){const id=req.headers['x-webdoctor-session'];const u=id&&sessions.get(id);if(!u)return res.status(401).json({error:'login_required'});req.user=u;next()}
+function headers(extra={}){return {Authorization:`Bearer ${process.env.KOPAI_API_KEY||''}`,'Content-Type':'application/json',...extra}}
+function textFrom(d){return d?.choices?.[0]?.message?.content||d?.message?.content||d?.content||d?.output||''}
+function extractJson(text){try{return JSON.parse(text)}catch{}const m=String(text||'').match(/```(?:json)?\s*([\s\S]*?)```/i);if(m)try{return JSON.parse(m[1])}catch{}const start=String(text||'').search(/[\[{]/);if(start>=0)try{return JSON.parse(String(text).slice(start))}catch{}return null}
+async function run(messages,user){const r=await fetch(`https://usekopai.com/api/v1/agents/${agentId}/messages`,{method:'POST',headers:headers(),body:JSON.stringify({endUserId:endUserId(user),messages})});const data=await r.json();if(!r.ok)throw new Error(data?.error?.message||data?.message||'Kopai request failed');return {raw:data,text:textFrom(data)}}
+app.post('/api/auth/demo-login',(req,res)=>{const name=String(req.body?.name||'Security Explorer').trim().slice(0,40)||'Security Explorer';const id=crypto.randomUUID();const user={id,name,avatar:name.split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase()};sessions.set(id,user);res.json({sessionId:id,user})});
+app.get('/api/auth/me',auth,(req,res)=>res.json({user:req.user,endUserId:endUserId(req.user)}));
+app.post('/api/auth/logout',auth,(req,res)=>{sessions.delete(req.headers['x-webdoctor-session']);res.json({ok:true})});
+app.post('/api/integrations',auth,async(req,res)=>{try{const toolkit=req.body?.toolkit||'github';const redirectUri=req.body?.redirectUri||`${req.protocol}://${req.get('host')}/?connected=github`;const r=await fetch(`https://usekopai.com/api/v1/agents/${agentId}/integrations`,{method:'POST',headers:headers(),body:JSON.stringify({toolkit,endUserId:endUserId(req.user),redirectUri})});const d=await r.json();res.status(r.status).json(d)}catch(e){res.status(502).json({error:'kopai_unreachable',message:e.message})}});
+app.get('/api/integrations',auth,async(req,res)=>{try{const r=await fetch(`https://usekopai.com/api/v1/agents/${agentId}/integrations?endUserId=${encodeURIComponent(endUserId(req.user))}`,{headers:headers()});res.status(r.status).json(await r.json())}catch(e){res.status(502).json({error:'kopai_unreachable',message:e.message})}});
+app.post('/api/repositories',auth,async(req,res)=>{try{const out=await run([{role:'user',content:'You are operating the WebDoctor repository selection step. Use the connected GitHub account to list every repository this end user can access. Return ONLY valid JSON in this exact shape: {"repositories":[{"name":"string","fullName":"owner/name","description":"string","language":"string","private":false,"updatedAt":"YYYY-MM-DD"}]}. Do not use markdown or commentary.'}],req.user);const parsed=extractJson(out.text)||extractJson(out.raw?.choices?.[0]?.message?.content);const repositories=Array.isArray(parsed?.repositories)?parsed.repositories:[];res.json({repositories,text:out.text,raw:out.raw})}catch(e){res.status(502).json({error:'repository_load_failed',message:e.message})}});
+app.post('/api/investigations',auth,async(req,res)=>{const repo=req.body?.repository;if(!repo?.fullName)return res.status(400).json({error:'repository_required'});try{const prompt=`You are WebDoctor's investigation orchestrator. Investigate the authorized GitHub repository ${repo.fullName}. Inspect the repository deeply using the connected GitHub account. Analyze application/API security and system/infrastructure security, then correlate concrete evidence into attack paths. Return a concise but complete security assessment with: executive summary, security score, critical/high/medium findings, affected files or components, confidence, evidence, attack paths, and prioritized remediation. Do not ask questions. Begin immediately.`;const out=await run([{role:'user',content:prompt}],req.user);res.json({repository:repo,text:out.text,raw:out.raw})}catch(e){res.status(502).json({error:'investigation_failed',message:e.message})}});
+app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'index.html')));app.listen(port,()=>console.log(`WebDoctor listening on http://localhost:${port}`));
